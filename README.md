@@ -80,8 +80,8 @@ examples/
     └── ref.jpg
 ...
 ```
-### Pose Extraction & Rendering
-Use git submodule to download the `scail_pose` module and then follow the [POSE_INSTRUCTION.md](POSE_INSTRUCTION.md) to extract and render the pose from the driving video. 
+### Driving Video & Mask Preparation
+SCAIL-2 takes three driving signals in addition to the reference image: a *driving video*, a per-frame *driving mask*, and a *reference mask*. Use the `scail_pose` submodule to generate them:
 
 ```shell
 git submodule update --init --recursive
@@ -95,18 +95,27 @@ SCAIL-2/
 ├── ...
 ├── scail_pose
 ```
-Change dir into the subdir and follow instructions:
+Change dir into the submodule and follow instructions:
 ```shell
 cd scail_pose
 # follow instructions in POSE_INSTRUCTION.md
 ```
-After pose extraction and rendering, the input data should be organized as follows:
+
+Depending on the driving mode, the files produced differ:
+
+- **End-to-end driven (recommended).** `rendered_v2.mp4` is simply a copy of `driving.mp4` — no intermediate pose rendering is required, the model consumes the raw driving frames directly. The pipeline still produces `rendered_mask_v2.mp4` (per-frame foreground mask of the driver) and `ref_mask.jpg` (foreground mask of the reference image).
+- **Pose-driven.** `rendered_v2.mp4` is an SMPL pose-rendered video derived from the driving video, paired with `rendered_mask_v2.mp4` / `ref_mask.jpg` as above.
+- **Cross-identity replacement.** Instead of `rendered_mask_v2.mp4`, supply `replace_mask.mp4` (the region to be replaced) together with `ref_mask.jpg`.
+
+After preparation, each example directory should look like:
 ```
 examples/
 ├── 001
 │   ├── driving.mp4
 │   ├── ref.jpg
-│   └── rendered_v2.mp4
+│   ├── rendered_v2.mp4         # end-to-end: copy of driving.mp4; pose-driven: SMPL rendering
+│   ├── rendered_mask_v2.mp4    # OR replace_mask.mp4 (cross-identity replacement)
+│   └── ref_mask.jpg            # foreground mask of the reference image
 └── 002
 ...
 ```
@@ -117,9 +126,9 @@ For inference in SAT, run the following command to start the inference with CLI 
 bash scripts/sample_sgl_14Bsc_xc_cli.sh
 ```
 
-The CLI will ask you to input in format like `<prompt>@@<example_dir>`, e.g. `the girl is dancing@@examples/001`. The `example_dir` should contain rendered.mp4 or rendered_aligned.mp4 after pose extraction and rendering. Results will be save to `samples/`.
+The CLI will ask you to input in format like `<prompt>@@<example_dir>`, e.g. `the girl is dancing@@examples/001`. The `example_dir` must contain the driving video, mask files, and reference image / mask described in the Driving Video & Mask Preparation section above. Results will be saved to `samples/`.
 
-We support direct txt input too, change `input_file` in [sample_sgl_14Bsc_xc_txt.yaml](configs/sampling/sample_sgl_14Bsc_xc_txt.yaml) to path of your input file, and fill in the input file with format like `<prompt>@@<example_dir>`, then run the following command:
+We support direct txt input too, change `input_file` in [wan_pose_14Bsc_xc_txt.yaml](configs/sampling/wan_pose_14Bsc_xc_txt.yaml) to path of your input file, and fill in the input file with format like `<prompt>@@<example_dir>`, then run the following command:
 ```
 bash scripts/sample_sgl_14Bsc_xc_txt.sh
 ```

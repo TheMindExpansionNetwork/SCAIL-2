@@ -959,13 +959,27 @@ class RFSampler(BaseDiffusionSampler):
     
     def sampler_step(self, sigma, next_sigma, denoiser, x, cond, uc=None, scale=None, fps=None):
         output = self.denoise(x, denoiser, sigma, cond, uc, scale=scale, fps=fps).to(torch.float32)
-        x = x + append_dims(next_sigma - sigma, x.ndim) * output
+        if "history" in cond:
+            assert 'history_mask' in cond, "Please provide history_mask for RF sampling."
+            history_mask = cond['history_mask']
+            c = x.shape[2]
+            history_mask_expanded = history_mask[:, :, :1, :, :].expand(-1, -1, c, -1, -1)  # b t c h w
+            x = x + append_dims(next_sigma - sigma, x.ndim) * output * (1 - history_mask_expanded)
+        else:
+            x = x + append_dims(next_sigma - sigma, x.ndim) * output
         return x
 
     def __call__(self, denoiser, x, cond, uc=None, num_steps=None, scale=None, ofs=None, fps=None):
         x, s_in, sigmas, num_sigmas, cond, uc, timesteps = self.prepare_sampling_loop(
             x, cond, uc, num_steps
         )
+        if "history" in cond:
+            assert 'history_mask' in cond, "Please provide history_mask for RF sampling."
+            history_mask = cond['history_mask']
+            c = x.shape[2]
+            mask_t = history_mask.any(dim=(2,3,4))
+            for i in range(x.shape[0]):   # b
+                x[i, mask_t[i]] = cond["history"][i]
 
         for i in self.get_sigma_gen(num_sigmas):
             x = self.sampler_step(

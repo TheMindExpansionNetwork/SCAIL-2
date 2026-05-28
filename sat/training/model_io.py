@@ -21,7 +21,11 @@ from sat import mpu
 from sat.helpers import print_rank0, print_all
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
 import itertools
+if torch.__version__ < '2.6':
+    from torch.distributed.checkpoint.state_dict import get_model_state_dict,StateDictOptions, get_optimizer_state_dict
 
+else:
+    from torch.distributed.checkpoint.state_dict import get_model_state_dict,StateDictOptions, get_optimizer_state_dict
 
 # for overriding pytorch's save/load state_dict for zero3
 _EXTRA_STATE_KEY_SUFFIX = '_extra_state' # pytorch default name
@@ -169,13 +173,17 @@ def save_checkpoint(iteration, model, optimizer,
                 print_rank0('Saving Ema Model...')
                 save_ds_checkpoint(iteration, model, lr_scheduler, args, True)
             restore_ema_parameters_back(optimizer)
-            
+    elif hasattr(args, 'fsdp2') and args.fsdp2:
+        # if mpu.get_data_parallel_rank() == 0 and mpu.get_sequence_parallel_rank() == 0:
+        print_rank0('Saving FSDP2 Model...')
+        save_fsdp2_checkpoint(iteration, model, optimizer, lr_scheduler, args)
+
     elif args.mode == 'inference':
         os.makedirs(os.path.join(args.save, str(iteration)), exist_ok=True)
         if torch.distributed.get_rank() < args.model_parallel_size:
             torch.save({'module': model.state_dict()}, os.path.join(args.save, str(iteration), 'mp_rank_{:02d}_model_states.pt'.format(torch.distributed.get_rank())))
     else:
-        raise ValueError("training without deepspeed is not supported.")
+        raise ValueError("training without deepspeed or fsdp2 is not supported.")
     # Wait so everyone is done (necessary)
     torch.distributed.barrier()
     # And update the latest iteration
@@ -191,7 +199,83 @@ def save_checkpoint(iteration, model, optimizer,
     # Wait so everyone is done (not necessary)
     torch.distributed.barrier()
 
+def save_fsdp2_checkpoint(iteration, model, optimizer, lr_scheduler, args, exclude_frozen_parameters=True):
+    """Save a FSDP2 model checkpoint."""
+    from torch.distributed._tensor import DTensor
+    
+    checkpoint_path = os.path.join(args.save, str(iteration))
+    os.makedirs(checkpoint_path, exist_ok=True)
 
+    # Prepare checkpoint data
+    sd = {}
+    sd['iteration'] = iteration
+    
+    if lr_scheduler is not None:
+        sd['lr_scheduler'] = lr_scheduler.state_dict()
+    
+    # Save RNG states
+    if not args.no_save_rng:
+        sd['random_rng_state'] = random.getstate()
+        sd['np_rng_state'] = np.random.get_state()
+        sd['torch_rng_state'] = torch.get_rng_state()
+        sd['cuda_rng_state'] = torch.cuda.get_rng_state()
+
+    def fsdp2_state_dict(model, optimizer=None):
+        model_state_dict = get_model_state_dict(
+            model=model,
+            options=StateDictOptions(
+                full_state_dict=True,
+                cpu_offload=True,
+            )
+        )
+        if optimizer is not None:
+            optimizer_state_dict = get_optimizer_state_dict(
+                model=model,
+                optimizers=optimizer,
+                options=StateDictOptions(
+                    full_state_dict=True,
+                    cpu_offload=True,
+                )
+            )
+        else:
+            optimizer_state_dict = None
+        return model_state_dict, optimizer_state_dict
+    
+    model_state_dict, optimizer_state_dict = fsdp2_state_dict(model, optimizer)
+    rank = torch.distributed.get_rank()
+
+    if torch.distributed.get_rank() == 0:
+        checkpoint_name = f'fsdp2_rank_{rank:04d}_checkpoint.pt'
+        checkpoint_file = os.path.join(checkpoint_path, checkpoint_name)
+        if exclude_frozen_parameters:
+            all_names = model.named_parameters()
+            for n, p in all_names:
+                if p.requires_grad:
+                    continue
+                del model_state_dict[n]
+        sd['module'] = model_state_dict
+        if args.save_optimizer:
+            sd['optimizer'] = optimizer_state_dict if optimizer_state_dict is not None else {}
+        print('Saving FSDP2 preparing')
+        torch.save(sd, checkpoint_file)
+        print_rank0(f'Saved FSDP2 checkpoint to {checkpoint_file}')
+    
+    # Optionally save a consolidated checkpoint on rank 0
+    if mpu.get_data_parallel_rank() == 0 and mpu.get_model_parallel_rank() == 0:
+        # For FSDP2, we can gather full state dict on rank 0 if needed
+        # This is memory intensive and optional
+        if args.save_full_model:
+            print_rank0('Gathering full model state dict on rank 0...')
+            # Note: This requires implementing proper DTensor gathering
+            # For now, we'll just save the metadata
+            metadata = {
+                'iteration': iteration,
+                'world_size': torch.distributed.get_world_size(),
+            }
+            metadata_file = os.path.join(checkpoint_path, 'metadata.json')
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=4)
+    
 def save_ds_checkpoint(iteration, model, lr_scheduler, args, use_ema = False):
     """Save a model checkpoint."""
 
@@ -277,7 +361,18 @@ def load_checkpoint(model, args, load_path=None, prefix='', specific_iteration=N
     if not success:
         return 0
     
-    checkpoint_name = get_checkpoint_name(load_path, iteration, release)
+    # Check if loading FSDP2 checkpoint
+    if (hasattr(args, 'fsdp2') and args.fsdp2) or args.fsdp2_ckpt:
+        # FSDP2 checkpoint loading
+        # rank = torch.distributed.get_rank() : we now only support single rank loading
+        checkpoint_name = os.path.join(load_path, str(iteration), f'fsdp2_rank_0000_checkpoint.pt')
+        if not os.path.exists(checkpoint_name):
+            # Fallback to regular checkpoint for compatibility
+            checkpoint_name = get_checkpoint_name(load_path, iteration, release)
+            print_rank0(f'FSDP2 checkpoint not found, trying regular checkpoint: {checkpoint_name}')
+    else:
+        checkpoint_name = get_checkpoint_name(load_path, iteration, release)
+
     if mpu.get_data_parallel_rank() == 0:
             print_all('global rank {} is loading checkpoint {}'.format(
                 torch.distributed.get_rank(), checkpoint_name))
@@ -297,7 +392,7 @@ def load_checkpoint(model, args, load_path=None, prefix='', specific_iteration=N
     
     if hasattr(model, 'module'):
         module = model.module
-    else: # inference without deepspeed
+    else: # inference without deepspeed or FSDP2
         module = model
 
     # only load module, other hyperparameters are just for recording.

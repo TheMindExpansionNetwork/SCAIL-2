@@ -424,16 +424,19 @@ def get_model(args, model_cls, **kwargs):
             mpu.get_model_parallel_rank(),
             sum([p.nelement() for p in model.parameters()])), flush=True)
     
-    if hasattr(args, 'fp16') and args.fp16:
-        model.half()
-    elif hasattr(args, 'bf16') and args.bf16:
-        model.bfloat16()
+    if not args.fsdp2:
+        # Fsdp2 model needs to be moved to device when fully sharded, and it is mixed precision by default.
+        if hasattr(args, 'fp16') and args.fp16:
+            model.half()
+        elif hasattr(args, 'bf16') and args.bf16:
+            model.bfloat16()
 
-    try: # TODO: is this useful?
-        if not hasattr(args, 'device'):
-            args.device = torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'
-        model = model.to(args.device)
-    except Exception as e:
-        print_all(e)
+        try: # TODO: is this useful?
+            if not hasattr(args, 'device'):
+                args.device = torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'
+            model = model.to(args.device)
+            print(f'successfully moved model to device: {args.device}')
+        except Exception as e:
+            print_all(e)    
     
     return model
