@@ -22,6 +22,7 @@ import gc
 from .distributed.fsdp import shard_model
 from .modules.clip import CLIPModel
 from .modules.model_scail import SCAILModel
+from .modules.model_scail2 import SCAIL2Model
 from .modules.t5 import T5EncoderModel
 from .modules.vae import WanVAE
 from .utils.fm_solvers import (
@@ -31,8 +32,9 @@ from .utils.fm_solvers import (
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .utils.lora import fuse_lora_with_diff_b
+from .utils.scail_utils import extract_and_compress_mask_to_latent
 
-class SCAILPipeline:
+class SCAIL2Pipeline:
 
     def __init__(
         self,
@@ -108,7 +110,7 @@ class SCAILPipeline:
             tokenizer_path=os.path.join(checkpoint_dir, config.clip_tokenizer))
 
         logging.info(f"Creating WanSCAILModel from {scail_safetensors_path}")
-        self.model = SCAILModel.from_config(scail_config_path)
+        self.model = SCAIL2Model.from_config(scail_config_path)
         state_dict = load_file(scail_safetensors_path)
         self.model.load_state_dict(state_dict)
         if self.lora_path is not None:
@@ -153,7 +155,12 @@ class SCAILPipeline:
     def generate(self,
                  input_prompt,
                  img,
+                 ref_mask_img: torch.Tensor,
                  pose_video: torch.Tensor,
+                 driving_mask_video: torch.Tensor,
+                 replace_flag: bool,
+                 segment_len=81,
+                 segment_overlap=5,
                  shift=5.0,
                  sample_solver='unipc',
                  sampling_steps=40,
@@ -168,9 +175,19 @@ class SCAILPipeline:
             input_prompt (`str`):
                 Text prompt for content generation.
             img (torch.Tensor):
-                Input image tensor. Shape: [3, H, W]
+                Input image tensor. Shape: [3, H, W], Range: (-1, 1)
+            ref_mask_img (torch.Tensor):
+                Input image mask tensor. Shape: [3, H, W], Range: (-1, 1)
             pose_video (torch.Tensor):
                 Input pose video. Shape: [T, C, H, W]
+            driving_mask_video (torch.Tensor):
+                Input driving mask tensor. Shape: [3, T, H, W], Range: (-1, 1)
+            replace_flag (bool):
+                True for replacement mode, False for animation mode
+            segment_len (`int`, *optional*, defaults to 81):
+                Number of pixel frames sampled in each segment.
+            segment_overlap (`int`, *optional*, defaults to 5):
+                Number of pixel frames shared with the previous segment as clean history.
             shift (`float`, *optional*, defaults to 5.0):
                 Noise schedule shift parameter. Affects temporal dynamics
                 [NOTE]: If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
@@ -189,30 +206,62 @@ class SCAILPipeline:
 
         Returns:
             torch.Tensor:
-                Generated video frames tensor. Dimensions: (C, N H, W) where:
-                - C: Color channels (3 for RGB)
-                - N: Number of frames (81)
-                - H: Frame height (from max_area)
-                - W: Frame width from max_area)
+                Generated video frames tensor. Dimensions: (C, T, H, W).
         """
+        if segment_len <= 0:
+            raise ValueError("segment_len must be positive")
+        if segment_overlap <= 0 or segment_overlap >= segment_len:
+            raise ValueError("segment_overlap must be in (0, segment_len)")
+
         pose_video = pose_video.to(self.device)
+        driving_mask_video = driving_mask_video.to(self.device)
         if not isinstance(img, torch.Tensor):
             img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device) # 3 H W
         else:
             img = img.to(self.device) # 3 H W, -1 ~ 1
         ori_img = img.unsqueeze(0).to(self.device) # 1, 3, H, W
-        pose_video_frame_num = pose_video.shape[0]
-        smpl_render_video = pose_video
-        # downsample
-        smpl_render_video = F.interpolate(smpl_render_video, scale_factor=0.5, mode='bilinear', align_corners=False)  # t c h w
-        smpl_render_latent = self.vae.encode([rearrange(smpl_render_video, 't c h w -> c t h w')])[0]
-        pose_latent = smpl_render_latent
+
+        if not isinstance(ref_mask_img, torch.Tensor):
+            ref_mask_img = TF.to_tensor(ref_mask_img).sub_(0.5).div_(0.5).to(self.device) # 3 H W
+        else:
+            ref_mask_img = ref_mask_img.to(self.device) # 3 H W, -1 ~ 1
+
+        num_frames = pose_video.shape[0]
+        if driving_mask_video.shape[1] != num_frames:
+            raise ValueError(
+                f"pose_video and driving_mask_video must have the same frame count, "
+                f"got {num_frames} and {driving_mask_video.shape[1]}")
+
+        def build_segments(total_frames):
+            if total_frames <= segment_len:
+                keep = ((total_frames - 1) // self.vae_stride[0]) * self.vae_stride[0] + 1
+                return [(0, keep)]
+            segments = []
+            start = 0
+            stride = segment_len - segment_overlap
+            while start < total_frames:
+                end = start + segment_len
+                if end > total_frames:
+                    break
+                segments.append((start, end))
+                start += stride
+            return segments
+
+        segments = build_segments(num_frames)
+        if len(segments) == 0:
+            raise ValueError(
+                f"No valid segment was produced for {num_frames} frames. "
+                f"Use a longer driving video or reduce segment_len.")
+        if len(segments) > 1:
+            logging.info(
+                f"Sampling {len(segments)} segments with segment_len={segment_len}, "
+                f"segment_overlap={segment_overlap}.")
 
         ref_latent = self.vae.encode([rearrange(ori_img, 't c h w -> c t h w')])[0]
-
-        # get latent shape from pose_latent and ref_latent
-        lat_t = pose_latent.shape[1]
-        lat_c, _, lat_h, lat_w = ref_latent.shape
+        ref_mask_latent_28ch = extract_and_compress_mask_to_latent(
+            ref_mask_img.unsqueeze(1), additional_spatial_downsample=1
+        )  # (28, 1, H_lat, W_lat)
+        lat_c = ref_latent.shape[0]
 
         # TODO: support sequence_parallel
         max_seq_len = 1e10
@@ -223,20 +272,10 @@ class SCAILPipeline:
         seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
-        # noise is only denoised part, do not inclue ref
-        noise = torch.randn(
-            lat_c,
-            lat_t,
-            lat_h,
-            lat_w,
-            dtype=torch.float32,
-            generator=seed_g,
-            device=self.device)
 
         if n_prompt is None:
             n_prompt = ""
 
-        # preprocess
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
             context = self.text_encoder([input_prompt], self.device)
@@ -260,103 +299,189 @@ class SCAILPipeline:
 
         no_sync = getattr(self.model, 'no_sync', noop_no_sync)
 
-        # evaluation mode
+        def apply_clean_history(latent, history_latent):
+            if history_latent is None:
+                return latent
+            history_t = history_latent.shape[1]
+            latent[:, :history_t] = history_latent.to(device=latent.device, dtype=latent.dtype)
+            return latent
+
+        output_segments = []
+        prev_history_pixel = None
+
         with amp.autocast(dtype=self.param_dtype), torch.no_grad(), no_sync():
 
-            if sample_solver == 'unipc':
-                sample_scheduler = FlowUniPCMultistepScheduler(
-                    num_train_timesteps=self.num_train_timesteps,
-                    shift=1,
-                    use_dynamic_shifting=False)
-                sample_scheduler.set_timesteps(
-                    sampling_steps, device=self.device, shift=shift)
-                timesteps = sample_scheduler.timesteps
-            elif sample_solver == 'dpm++':
-                sample_scheduler = FlowDPMSolverMultistepScheduler(
-                    num_train_timesteps=self.num_train_timesteps,
-                    shift=1,
-                    use_dynamic_shifting=False)
-                sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
-                timesteps, _ = retrieve_timesteps(
-                    sample_scheduler,
-                    device=self.device,
-                    sigmas=sampling_sigmas)
-            else:
-                raise NotImplementedError("Unsupported solver.")
-
-            # sample videos
-            latent = noise
-
-            # Pass pose_latents to the model
-            arg_c = {
-                'context': [context[0]],
-                'clip_fea': clip_context,
-                'seq_len': max_seq_len,
-                'ref_latents': [ref_latent], 
-                'pose_latents': [pose_latent],
-            }
-
-            arg_null = {
-                'context': context_null,
-                'clip_fea': clip_context,
-                'seq_len': max_seq_len,
-                'ref_latents': [ref_latent],
-                'pose_latents': [pose_latent],
-            }
-
-            if offload_model:
-                torch.cuda.empty_cache()
-
-            self.model.to(self.device)
-            for _, t in enumerate(tqdm(timesteps)):
-                latent_model_input = [latent.to(self.device)]
-                timestep = [t]
-
-                timestep = torch.stack(timestep).to(self.device)
-
-                noise_pred_cond = self.model(
-                    latent_model_input, t=timestep, **arg_c)[0].to(
-                        torch.device('cpu') if offload_model else self.device)
-                if offload_model:
-                    torch.cuda.empty_cache()
-                if guide_scale <= 1.0:
-                    noise_pred = noise_pred_cond
+            def build_sample_scheduler():
+                if sample_solver == 'unipc':
+                    sample_scheduler = FlowUniPCMultistepScheduler(
+                        num_train_timesteps=self.num_train_timesteps,
+                        shift=1,
+                        use_dynamic_shifting=False)
+                    sample_scheduler.set_timesteps(
+                        sampling_steps, device=self.device, shift=shift)
+                    timesteps = sample_scheduler.timesteps
+                elif sample_solver == 'dpm++':
+                    sample_scheduler = FlowDPMSolverMultistepScheduler(
+                        num_train_timesteps=self.num_train_timesteps,
+                        shift=1,
+                        use_dynamic_shifting=False)
+                    sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
+                    timesteps, _ = retrieve_timesteps(
+                        sample_scheduler,
+                        device=self.device,
+                        sigmas=sampling_sigmas)
                 else:
-                    noise_pred_uncond = self.model(
-                        latent_model_input, t=timestep, **arg_null)[0].to(
+                    raise NotImplementedError("Unsupported solver.")
+                return sample_scheduler, timesteps
+
+            def sample_func(latent, arg_c, arg_null, history_latent):
+                if offload_model:
+                    self.model.to(self.device)
+                latent = apply_clean_history(latent, history_latent)
+                for _, t in enumerate(tqdm(timesteps)):
+                    latent_model_input = [apply_clean_history(latent.to(self.device), history_latent)]
+                    timestep = [t]
+
+                    timestep = torch.stack(timestep).to(self.device)
+
+                    noise_pred_cond = self.model(
+                        latent_model_input, t=timestep, **arg_c)[0].to(
                             torch.device('cpu') if offload_model else self.device)
                     if offload_model:
                         torch.cuda.empty_cache()
-                    noise_pred = noise_pred_uncond + guide_scale * (
-                        noise_pred_cond - noise_pred_uncond)
+                    if guide_scale <= 1.0:
+                        noise_pred = noise_pred_cond
+                    else:
+                        noise_pred_uncond = self.model(
+                            latent_model_input, t=timestep, **arg_null)[0].to(
+                                torch.device('cpu') if offload_model else self.device)
+                        if offload_model:
+                            torch.cuda.empty_cache()
+                        noise_pred = noise_pred_uncond + guide_scale * (
+                            noise_pred_cond - noise_pred_uncond)
 
-                latent = latent.to(
-                    torch.device('cpu') if offload_model else self.device)
+                    latent = latent.to(
+                        torch.device('cpu') if offload_model else self.device)
 
-                temp_x0 = sample_scheduler.step(
-                    noise_pred.unsqueeze(0),
-                    t,
-                    latent.unsqueeze(0),
-                    return_dict=False,
-                    generator=seed_g)[0]
-                latent = temp_x0.squeeze(0)
+                    temp_x0 = sample_scheduler.step(
+                        noise_pred.unsqueeze(0),
+                        t,
+                        latent.unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g)[0]
+                    latent = apply_clean_history(temp_x0.squeeze(0), history_latent)
 
-                x0 = [latent.to(self.device)]
-                del latent_model_input, timestep
+                    x0 = [latent.to(self.device)]
+                    del latent_model_input, timestep
 
-            if offload_model:
-                self.model.cpu()
-                torch.cuda.empty_cache()
+                if offload_model:
+                    self.model.cpu()
+                    torch.cuda.empty_cache()
 
-            if self.rank == 0:
-                videos = self.vae.decode(x0)
+                if self.rank == 0:
+                    videos = self.vae.decode(x0)
+                return videos
 
-        del noise, latent
-        del sample_scheduler
+            for seg_idx, (seg_start, seg_end) in enumerate(segments):
+                logging.info(
+                    f"Processing segment {seg_idx + 1}/{len(segments)}: "
+                    f"frames [{seg_start}, {seg_end})")
+                sample_scheduler, timesteps = build_sample_scheduler()
+
+                pose_segment = pose_video[seg_start:seg_end]
+                smpl_render_video = F.interpolate(
+                    pose_segment, scale_factor=0.5, mode='bilinear', align_corners=False)
+                pose_latent = self.vae.encode([rearrange(smpl_render_video, 't c h w -> c t h w')])[0]
+
+                lat_t = pose_latent.shape[1]
+                _, lat_h, lat_w = ref_latent.shape[1:]
+
+                null_noisy_mask = torch.zeros(
+                    ref_mask_latent_28ch.shape[0], lat_t, lat_h, lat_w,
+                    device=self.device, dtype=ref_mask_latent_28ch.dtype)
+                ref_masks = torch.cat([ref_mask_latent_28ch, null_noisy_mask], dim=1)
+
+                driving_mask_segment = driving_mask_video[:, seg_start:seg_end]
+                driving_mask_segment = F.interpolate(
+                    driving_mask_segment, scale_factor=0.5, mode='bilinear', align_corners=False)
+                driving_masks = extract_and_compress_mask_to_latent(
+                    driving_mask_segment, additional_spatial_downsample=1
+                )
+
+                history_latent = None
+                history_mask = None
+                if seg_idx > 0:
+                    if prev_history_pixel is None:
+                        raise RuntimeError("Missing previous segment history frames.")
+                    history_latent = self.vae.encode([
+                        prev_history_pixel.to(self.device, dtype=self.param_dtype)
+                    ])[0]
+                    history_t = min(history_latent.shape[1], lat_t)
+                    history_mask = torch.zeros(
+                        4, lat_t, lat_h, lat_w, device=self.device, dtype=torch.float32)
+                    history_mask[:, :history_t] = 1
+                    logging.info(
+                        f"Using {prev_history_pixel.shape[1]} clean history frames "
+                        f"({history_t} latent frames).")
+
+                noise = torch.randn(
+                    lat_c,
+                    lat_t,
+                    lat_h,
+                    lat_w,
+                    dtype=torch.float32,
+                    generator=seed_g,
+                    device=self.device)
+
+                arg_c = {
+                    'context': [context[0]],
+                    'clip_fea': clip_context,
+                    'seq_len': max_seq_len,
+                    'ref_latents': [ref_latent],
+                    'ref_masks': [ref_masks],
+                    'pose_latents': [pose_latent],
+                    'driving_masks': [driving_masks],
+                    'history_mask': [history_mask] if history_mask is not None else None,
+                    'replace_flag': replace_flag,
+                }
+
+                arg_null = {
+                    'context': context_null,
+                    'clip_fea': clip_context,
+                    'seq_len': max_seq_len,
+                    'ref_latents': [ref_latent],
+                    'ref_masks': [ref_masks],
+                    'pose_latents': [pose_latent],
+                    'driving_masks': [driving_masks],
+                    'history_mask': [history_mask] if history_mask is not None else None,
+                    'replace_flag': replace_flag,
+                }
+
+                if offload_model:
+                    torch.cuda.empty_cache()
+
+                videos = sample_func(noise, arg_c, arg_null, history_latent)
+                segment_video = videos[0] if self.rank == 0 else None
+                if self.rank == 0:
+                    if seg_idx == 0:
+                        output_segments.append(segment_video.cpu())
+                    else:
+                        output_segments.append(segment_video[:, segment_overlap:].cpu())
+                    if seg_idx < len(segments) - 1:
+                        prev_history_pixel = segment_video[:, -segment_overlap:].contiguous()
+
+                del noise, pose_latent, ref_masks, driving_masks, sample_scheduler
+                if history_latent is not None:
+                    del history_latent, history_mask
+                if offload_model:
+                    torch.cuda.empty_cache()
+
         if offload_model:
             gc.collect()
             torch.cuda.synchronize()
         if dist.is_initialized():
             dist.barrier()
 
-        return videos[0] if self.rank == 0 else None
+        if self.rank == 0:
+            return torch.cat(output_segments, dim=1).to(self.device)
+        return None

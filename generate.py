@@ -12,6 +12,8 @@ import random
 
 import torch
 import torch.distributed as dist
+
+from einops import rearrange
 from PIL import Image
 
 import wan
@@ -115,10 +117,25 @@ def _parse_args():
         default=None,
         help="The reference image to generate the video from.")
     parser.add_argument(
+        "--mask_image",
+        type=str,
+        default=None,
+        help="The mask of reference image.")
+    parser.add_argument(
         "--pose",
         type=str,
         default=None,
         help="The rendered pose video to generate the video from.")
+    parser.add_argument(
+        "--mask_video",
+        type=str,
+        default=None,
+        help="The mask of driving video.")
+    parser.add_argument(
+        "--replace_flag",
+        action="store_true",
+        default=False,
+        help="Pass --replace_flag to run in replacement mode. Default: False (animation mode).")
     parser.add_argument(
         "--target_h",
         type=int,
@@ -161,6 +178,16 @@ def _parse_args():
         default=5.0,
         help="Classifier free guidance scale.")
     parser.add_argument(
+        "--segment_len",
+        type=int,
+        default=81,
+        help="The number of pixel frames to sample per segment for long-video inference.")
+    parser.add_argument(
+        "--segment_overlap",
+        type=int,
+        default=5,
+        help="The number of pixel frames reused as clean history between adjacent segments.")
+    parser.add_argument(
         "--lora_path",
         type=str,
         default=None,
@@ -191,7 +218,21 @@ def _init_logging(rank):
     else:
         logging.basicConfig(level=logging.ERROR)
 
-def generate_video(pipeline: wan.SCAILPipeline, prompt: str, image_path: str, pose_path: str, args, device, rank, cfg, input_idx):
+def _check_input_path(path, name):
+    if path is None:
+        raise ValueError(f"Please specify {name}.")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{name} does not exist: {path}")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{name} is not a file: {path}")
+
+
+def generate_video(pipeline: wan.SCAIL2Pipeline, prompt: str, image_path: str, image_mask_path: str, pose_path: str, driving_mask_path: str, args, device, rank, cfg, input_idx, replace_flag):
+    _check_input_path(image_path, "input image")
+    _check_input_path(image_mask_path, "input mask image")
+    _check_input_path(pose_path, "input pose video")
+    _check_input_path(driving_mask_path, "input mask video")
+
     logging.info(f"Input prompt: {prompt}")
     logging.info(f"Input image: {image_path}")
     img = Image.open(image_path).convert("RGB")
@@ -205,22 +246,43 @@ def generate_video(pipeline: wan.SCAILPipeline, prompt: str, image_path: str, po
     if (h < w and target_h > target_w) or (h > w and target_h < target_w):
         target_h, target_w = target_w, target_h
 
+    logging.info(f"Input mask image: {image_mask_path}")
+    mask_img = Image.open(image_mask_path).convert("RGB")
+    mask_img_uncropped = load_image_to_tensor_chw_normalized(mask_img).to(device)
+
     logging.info(f"Input pose video: {pose_path}")
     pose_video = load_video_for_pose_sample(pose_path) # t h w c
     pose_video = pose_video.permute(0, 3, 1, 2)  # t c h w
     pose_video = resize_for_rectangle_crop(pose_video, (target_h, target_w), reshape_mode="center")
     pose_video = (pose_video - 127.5) / 127.5  # -1 1
 
+    logging.info(f"Input mask video: {driving_mask_path}")
+    driving_mask_video = load_video_for_pose_sample(driving_mask_path) # t h w c
+    driving_mask_video = driving_mask_video.permute(0, 3, 1, 2)  # t c h w
+    driving_mask_video = resize_for_rectangle_crop(driving_mask_video, (target_h, target_w), reshape_mode="center")
+    driving_mask_video = (driving_mask_video - 127.5) / 127.5  # -1 1
+    driving_mask_video = rearrange(driving_mask_video, 't c h w -> c t h w')
+
     img = resize_for_rectangle_crop(img_uncropped, (target_h, target_w), reshape_mode="center")
     img = img.squeeze(0)  # c h w, -1, 1
+
+    mask_img = resize_for_rectangle_crop(mask_img_uncropped, (target_h, target_w), reshape_mode="center")
+    mask_img = mask_img.squeeze(0)
+
+    logging.info(f"Mode: {'Replacement' if replace_flag else 'Animation'}")
 
     logging.info("Generating video ...")
     video = pipeline.generate(
         prompt,
         img,
+        ref_mask_img=mask_img,
         pose_video=pose_video,
+        driving_mask_video=driving_mask_video,
+        replace_flag=replace_flag,
         shift=args.sample_shift,
         sample_solver=args.sample_solver,
+        segment_len=args.segment_len,
+        segment_overlap=args.segment_overlap,
         sampling_steps=args.sample_steps,
         guide_scale=args.sample_guide_scale,
         seed=args.base_seed,
@@ -233,7 +295,7 @@ def generate_video(pipeline: wan.SCAILPipeline, prompt: str, image_path: str, po
             formatted_prompt = args.prompt.replace(" ", "_").replace("/",
                                                                      "_")[:50]
             suffix = '.mp4'
-            args.save_file = f"SCAIL_{args.target_w}{'x' if sys.platform=='win32' else '*'}{args.target_h}_{args.ring_size}_{formatted_prompt}_{formatted_time}" + suffix
+            args.save_file = f"SCAIL2_{args.target_w}{'x' if sys.platform=='win32' else '*'}{args.target_h}_{args.ring_size}_{formatted_prompt}_{formatted_time}" + suffix
         save_file = args.save_file
         if input_idx is not None:
             save_dir = os.path.join(args.save_dir, f"{input_idx:07}")
@@ -262,11 +324,11 @@ def generate(args):
             f"offload_model is not specified, set to {args.offload_model}.")
     if world_size > 1:
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(
-            backend="nccl",
-            init_method="env://",
-            rank=rank,
-            world_size=world_size)
+        # dist.init_process_group(
+        #     backend="nccl",
+        #     init_method="env://",
+        #     rank=rank,
+        #     world_size=world_size)
     else:
         assert not (
             args.t5_fsdp or args.dit_fsdp
@@ -305,14 +367,15 @@ def generate(args):
         args.prompt = ""
 
     if args.txt is not None:
+        raise NotImplementedError()
         tasks = get_tasks_from_txt(args.txt)
         logging.info(f"Total number of generation tasks: {len(tasks)}.")
         tasks = tasks[rank::world_size]
     else:
-        tasks = [(args.prompt, args.image, args.pose, None)]
+        tasks = [(args.prompt, args.image, args.mask_image, args.pose, args.mask_video, None)]
     
-    logging.info("Creating SCAIL pipeline.")
-    scail_pipeline = wan.SCAILPipeline(
+    logging.info("Creating SCAIL-2 pipeline.")
+    scail_pipeline = wan.SCAIL2Pipeline(
         config=cfg,
         checkpoint_dir=args.ckpt_dir,
         scail_safetensors_path=args.scail_path,
@@ -328,8 +391,8 @@ def generate(args):
     )
 
     for task in tasks:
-        prompt, image_path, pose_path, input_idx = task
-        generate_video(scail_pipeline, prompt, image_path, pose_path, args, device, rank, cfg, input_idx)
+        prompt, image_path, image_mask_path, pose_path, driving_mask_path, input_idx = task
+        generate_video(scail_pipeline, prompt, image_path, image_mask_path, pose_path, driving_mask_path, args, device, rank, cfg, input_idx, args.replace_flag)
         
     logging.info("Finished.")
 

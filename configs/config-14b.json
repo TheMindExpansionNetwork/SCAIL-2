@@ -6,6 +6,7 @@
   "ffn_dim": 13824,
   "freq_dim": 256,
   "in_dim": 20,
+  "mask_dim": 28, 
   "model_type": "i2v",
   "num_heads": 40,
   "num_layers": 40,
