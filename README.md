@@ -68,74 +68,72 @@ pip install -r requirements.txt
 ```
 
 ## 🦾 Usage
-### Input preparation
-The input data should be organized as follows, we have provided some example data in `examples/`:
-```
-examples/
-├── 001
-│   ├── driving.mp4
-│   ├── ref.jpg
-└── 002
-    ├── driving.mp4
-    └── ref.jpg
-...
-```
-### Driving Video & Mask Preparation
-SCAIL-2 takes three driving signals in addition to the reference image: a *driving video*, a per-frame *driving mask*, and a *reference mask*. Use the `scail_pose` submodule to generate them:
+### Input Preparation
 
-```shell
-git submodule update --init --recursive
+`generate.py` runs one SCAIL-2 inference job from four local input files:
+
 ```
-After that, the project structure should be like this:
-```
-SCAIL-2/
-├── examples
-├── sat
-├── configs
-├── ...
-├── scail_pose
-```
-Change dir into the submodule and follow instructions:
-```shell
-cd scail_pose
-# follow instructions in POSE_INSTRUCTION.md
+examples/001/
+├── ref.jpg                 # reference character image
+├── ref_mask.jpg            # foreground mask of the reference image
+├── rendered_v2.mp4         # driving / pose video consumed by --pose
+└── rendered_mask_v2.mp4    # per-frame driving mask consumed by --mask_video
 ```
 
-Depending on the driving mode, the files produced differ:
+The paths passed to `--image`, `--mask_image`, `--pose`, and `--mask_video` must exist. The script checks them before loading the image/video data.
 
-- **End-to-end driven (recommended).** `rendered_v2.mp4` is simply a copy of `driving.mp4` — no intermediate pose rendering is required, the model consumes the raw driving frames directly. The pipeline still produces `rendered_mask_v2.mp4` (per-frame foreground mask of the driver) and `ref_mask.jpg` (foreground mask of the reference image).
-- **Pose-driven.** `rendered_v2.mp4` is an SMPL pose-rendered video derived from the driving video, paired with `rendered_mask_v2.mp4` / `ref_mask.jpg` as above.
-- **Cross-identity replacement.** Instead of `rendered_mask_v2.mp4`, supply `replace_mask.mp4` (the region to be replaced) together with `ref_mask.jpg`.
+For animation mode, `--pose` can be an end-to-end driving video or a pose-rendered video, depending on how the sample was prepared. `--mask_video` should be the corresponding per-frame foreground/control mask. For replacement mode, pass `--replace_flag` and provide the replacement-region mask through `--mask_video`.
 
-After preparation, each example directory should look like:
-```
-examples/
-├── 001
-│   ├── driving.mp4
-│   ├── ref.jpg
-│   ├── rendered_v2.mp4         # end-to-end: copy of driving.mp4; pose-driven: SMPL rendering
-│   ├── rendered_mask_v2.mp4    # OR replace_mask.mp4 (cross-identity replacement)
-│   └── ref_mask.jpg            # foreground mask of the reference image
-└── 002
-...
-```
+### Single-GPU Inference
 
-### Model Inference
-For inference in SAT, run the following command to start the inference with CLI input:
-```
-bash scripts/sample_sgl_14Bsc_xc_cli.sh
+Run inference directly with `generate.py`:
+
+```bash
+python generate.py \
+    --model SCAIL-14B \
+    --ckpt_dir /path/to/SCAIL-2 \
+    --scail_path /path/to/SCAIL-2.safetensors \
+    --target_w 896 --target_h 512 \
+    --image examples/001/ref.jpg \
+    --mask_image examples/001/ref_mask.jpg \
+    --pose examples/001/rendered_v2.mp4 \
+    --mask_video examples/001/rendered_mask_v2.mp4 \
+    --prompt "The girl is dancing" \
+    --save_file output.mp4
 ```
 
-The CLI will ask you to input in format like `<prompt>@@<example_dir>`, e.g. `the girl is dancing@@examples/001`. The `example_dir` must contain the driving video, mask files, and reference image / mask described in the Driving Video & Mask Preparation section above. Results will be saved to `samples/`.
+Useful sampling options:
 
-We support direct txt input too, change `input_file` in [wan_pose_14Bsc_xc_txt.yaml](configs/sampling/wan_pose_14Bsc_xc_txt.yaml) to path of your input file, and fill in the input file with format like `<prompt>@@<example_dir>`, then run the following command:
+- `--sample_steps`: number of denoising steps. Defaults to `40`.
+- `--sample_shift`: flow-matching scheduler shift. Defaults to `3.0` if not specified.
+- `--sample_guide_scale`: classifier-free guidance scale. Defaults to `5.0`.
+- `--sample_solver`: `unipc` or `dpm++`. Defaults to `unipc`.
+- `--offload_model`: whether to offload model components between stages. For single-process inference, the default is `True`.
+
+### LoRA Integration
+
+If you use a Lightx2v LoRA checkpoint, pass it with `--lora_path` and set its strength with `--lora_alpha`:
+
+```bash
+python generate.py \
+    --model SCAIL-14B \
+    --ckpt_dir /path/to/SCAIL-2 \
+    --scail_path /path/to/SCAIL-2.safetensors \
+    --lora_path Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors \
+    --lora_alpha 1.0 \
+    --sample_steps 8 \
+    --sample_shift 1 \
+    --sample_guide_scale 1.0 \
+    --target_w 896 --target_h 512 \
+    --image examples/001/ref.jpg \
+    --mask_image examples/001/ref_mask.jpg \
+    --pose examples/001/rendered_v2.mp4 \
+    --mask_video examples/001/rendered_mask_v2.mp4 \
+    --prompt "The girl is dancing" \
+    --save_file output.mp4
 ```
-bash scripts/sample_sgl_14Bsc_xc_txt.sh
-```
 
-Note that our model is trained with **long detailed prompts**, even though a short or even null prompt can be used, the result may not be as good as the long prompt. We will provide our prompt generation snippets, using Google [Gemini](https://deepmind.google/models/gemini/) to read from the reference image and the driving motion and generate a detailed prompt like `A woman with curly hair is joyfully dancing along a rocky shoreline, wearing a sleek blue two-piece outfit. She performs various dance moves, including twirling, raising her hands, and embracing the lively seaside atmosphere, her tattoos and confident demeanor adding to her dynamic presence.` 
-
-You can further choose sampling configurations like resolution in the yaml file under `configs/sampling/` or directly modify `sample_video.py` for customized sampling logic.
+Note that SCAIL-2 is trained with long, detailed prompts. Short prompts or an empty prompt can run, but detailed descriptions of the reference subject and motion usually produce better results.
 
 ## ✨ Acknowledgements
 Our implementation is built upon the foundation of [Wan 2.1](https://github.com/Wan-Video/Wan2.1) and the overall project architecture is inherited from [SCAIL](https://github.com/zai-org/SCAIL). Thanks for their remarkable contribution and released code.
