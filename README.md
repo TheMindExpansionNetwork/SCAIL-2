@@ -208,6 +208,8 @@ python generate.py \
 
 Run inference directly with `generate.py`:
 
+Example for animation:
+
 ```bash
 python generate.py \
     --model SCAIL-14B \
@@ -220,6 +222,23 @@ python generate.py \
     --mask_video examples/001/rendered_mask_v2.mp4 \
     --prompt "The girl is dancing" \
     --save_file output.mp4
+```
+
+Example for replacement:
+
+```bash
+python generate.py \
+    --model SCAIL-14B \
+    --ckpt_dir /path/to/SCAIL-2 \
+    --scail_path /path/to/SCAIL-2.safetensors \
+    --target_w 896 --target_h 512 \
+    --image examples/replace_001/ref.png \
+    --mask_image examples/replace_001/ref_mask.png \
+    --pose examples/replace_001/rendered_v2.mp4 \
+    --mask_video examples/replace_001/replace_mask.mp4 \
+    --prompt "A blond white male wearing a black suit, trousers, and leather shoes is playing the violin on the street while pedestrians walk past him." \
+    --save_file output.mp4 \
+    --replace_flag
 ```
 
 Useful sampling options:
