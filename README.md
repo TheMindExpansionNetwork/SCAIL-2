@@ -84,6 +84,62 @@ The paths passed to `--image`, `--mask_image`, `--pose`, and `--mask_video` must
 
 For animation mode, `--pose` can be an end-to-end driving video or a pose-rendered video, depending on how the sample was prepared. `--mask_video` should be the corresponding per-frame foreground/control mask. For replacement mode, pass `--replace_flag` and provide the replacement-region mask through `--mask_video`.
 
+### Prompt Semantics
+
+For both animation and character replacement, `--prompt` should describe the generated video itself. It should not be an instruction to the model.
+
+For replacement tasks, the prompt should describe the video after replacement has already happened. For better results, describe the replacement character's visible clothing and appearance, and include objects the character interacts with or stays close to in the video, such as tools, instruments, chairs, tables, vehicles, doors, or handheld items.
+
+### Character Replacement Prompt Enhancer
+
+We provide an optional Gemini-based helper, `prompt_enhancer.py`, to turn a short replacement instruction into a positive prompt for `generate.py`. The helper samples frames from the source video, reads the replacement reference image, uses few-shot examples from `prompt_examples.txt`, and outputs a long English description of the replaced video.
+
+`google-genai` is not installed by default in `requirements.txt`. Install it before using the enhancer:
+
+```bash
+pip install google-genai
+```
+
+Set a Gemini API key before running. 
+
+```bash
+export GEMINI_API_KEY=your_api_key
+```
+
+Example:
+
+```bash
+python prompt_enhancer.py \
+    --video /path/to/driving.mp4 \
+    --image /path/to/ref.png \
+    --instruction "replace the man in the blue jacket in the video with the person in the image" \
+    --examples prompt_examples.txt \
+    --num_frames 8 \
+    --output enhanced_prompt.txt \
+    --caption_out source_caption.txt
+```
+
+The `--instruction` argument is only for Gemini, so it can say who should be replaced by whom. The file written to `--output` is the positive generated-video description that should be passed to `generate.py --prompt`; the enhancer is instructed to include useful SCAIL-2 prompt details such as the replacement character's clothing and objects the character interacts with.
+
+Use the enhanced prompt for replacement inference:
+
+```bash
+python generate.py \
+    --model SCAIL-14B \
+    --ckpt_dir /path/to/SCAIL-2 \
+    --scail_path /path/to/SCAIL-2.safetensors \
+    --replace_flag \
+    --target_w 896 --target_h 512 \
+    --image /path/to/ref.png \
+    --mask_image /path/to/ref_mask.png \
+    --pose /path/to/driving.mp4 \
+    --mask_video /path/to/replace_mask.mp4 \
+    --prompt "$(cat enhanced_prompt.txt)" \
+    --save_file replacement_output.mp4
+```
+
+`prompt_examples.txt` is used as few-shot style guidance. Add more examples there if you want the enhanced prompts to follow a different level of detail or wording.
+
 ### Single-GPU Inference
 
 Run inference directly with `generate.py`:
