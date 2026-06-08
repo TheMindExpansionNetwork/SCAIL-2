@@ -12,6 +12,8 @@
 
 This repository contains the official implementation code of SCAIL-2: Unifying Character Image Animation with End-to-end In-Context Conditioning. The code is for the inference of SCAIL-2 Model, the first open-source model to support **End-to-End** Character Animation.
 
+> **Reproducing paper results?** Use the [`sat-scail2`](https://github.com/teal024/SCAIL-2/tree/sat-scail2) branch, which preserves the original SAT-based implementation that produced the numbers reported in the paper. This branch (`wan-scail2`) is the streamlined Wan-based pipeline recommended for general inference.
+
 
 <p align="center">
   <img src='resources/teaser.png' alt='Teaser' width='90%'>
