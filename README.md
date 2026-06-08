@@ -67,6 +67,63 @@ Please make sure your Python version is between 3.10 and 3.12, inclusive of both
 pip install -r requirements.txt
 ```
 
+### Input Preparation
+
+`SCAIL-Pose` contains the preprocessing code used to prepare SCAIL-2 inputs, including pose extraction, pose rendering, reference masks, and driving-video masks. It can prepare both animation inputs and character replacement inputs. The submodule should live under the project root:
+
+```
+SCAIL-2/
+├── generate.py
+├── examples/
+├── SCAIL-Pose/
+└── ...
+```
+
+After cloning this repository, initialize the submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
+Enter the submodule and follow its environment setup. `SCAIL-Pose` recommends an OpenMMLab/MMPose environment, then installing its own requirements:
+
+```bash
+cd SCAIL-Pose
+pip install -r requirements.txt
+```
+
+Download the pose-preprocessing weights inside `SCAIL-Pose/pretrained_weights`. The required layout is:
+
+```
+pretrained_weights/
+├── nlf_l_multi_0.3.2.torchscript
+└── DWPose/
+    ├── dw-ll_ucoco_384.onnx
+    └── yolox_l.onnx
+```
+
+For SCAIL-2 animation, `SCAIL-Pose` provides an all-in-one preprocessing entrypoint:
+
+```bash
+# Recommended end-to-end mode: rendered_v2.mp4 is the driving video copy,
+# and the mask video is generated from SAM3 masks.
+python NLFPoseExtract/process_animation_aio.py --subdir /path/to/input --e2e_mode
+
+# Pose-driven mode: runs NLF + DWPose and writes a skeleton render.
+python NLFPoseExtract/process_animation_aio.py --subdir /path/to/input
+```
+
+For character replacement, use:
+
+```bash
+python NLFPoseExtract/process_replacement.py --subdir /path/to/input
+
+# If the driving video has multiple people and only one should be replaced:
+python NLFPoseExtract/process_replacement.py --subdir /path/to/input --matchnearest
+```
+
+The preprocessing outputs are written back to the example folder and can be passed to `generate.py` as `--image`, `--mask_image`, `--pose`, and `--mask_video`.
+
 ## 🦾 Usage
 ### Input Preparation
 
