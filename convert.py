@@ -89,6 +89,8 @@ def get_new_mappings(key: str, param: torch.Tensor) -> Dict[str, torch.Tensor]:
                 modules.append("patch_embedding")
             elif parser.match("proj_pose"):
                 modules.append("patch_embedding_pose")
+            elif parser.match("proj_mask"):
+                modules.append("patch_embedding_mask")
             else:
                 raise ValueError(key)
             modules.append(parser.step())
