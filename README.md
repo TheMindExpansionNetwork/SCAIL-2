@@ -3,8 +3,11 @@
 
  <div align="center">
   <img src="https://img.shields.io/badge/arXiv-coming%20soon-red" alt="arXiv: coming soon">
-  <a href="https://teal024.github.io/SCAIL-E2E/">
-    <img src="https://img.shields.io/badge/Project%20Page-SCAIL--E2E-green" alt="Project Page">
+  <a href="https://huggingface.co/zai-org/SCAIL-2">
+    <img src="https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-SCAIL--2-yellow" alt="HuggingFace">
+  </a>
+  <a href="https://teal024.github.io/SCAIL-2/">
+    <img src="https://img.shields.io/badge/Project%20Page-SCAIL--2-green" alt="Project Page">
   </a>
 </div>
 
@@ -278,7 +281,7 @@ python generate.py \
 Note that SCAIL-2 is trained with long, detailed prompts. Short prompts or an empty prompt can run, but detailed descriptions of the reference subject and motion usually produce better results.
 
 ## ✨ Acknowledgements
-Our implementation is built upon the foundation of [Wan 2.1](https://github.com/Wan-Video/Wan2.1) and the overall project architecture is inherited from [SCAIL](https://github.com/zai-org/SCAIL). Thanks for their remarkable contribution and released code.
+Our implementation is built upon the foundation of [Wan 2.1](https://github.com/Wan-Video/Wan2.1) and the overall project architecture is inherited from [SCAIL](https://github.com/zai-org/SCAIL). We specially thanks [Wan-Animate](https://github.com/Wan-Video/Wan2.2), [MoCha](https://github.com/Orange-3DV-Team/MoCha) as supplement data generators besides [SCAIL](https://github.com/zai-org/SCAIL) and [HuMo Dataset](https://github.com/Phantom-video/HuMo) as the high-quality source video provider.
 
 ## 📄 Citation
 
