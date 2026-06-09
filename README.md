@@ -2,10 +2,10 @@
 
 
  <div align="center">
-  <img src='https://img.shields.io/badge/📖 arXiv-coming soon-red'>
-  <img src='https://img.shields.io/badge/🤗 HuggingFace-coming soon-yellow'>
-  <img src='https://img.shields.io/badge/🤖 ModelScope-coming soon-blue'>
-  <img src='https://img.shields.io/badge/🌐 Project Page-coming soon-green'>
+  <img src="https://img.shields.io/badge/arXiv-coming%20soon-red" alt="arXiv: coming soon">
+  <a href="https://teal024.github.io/SCAIL-E2E/">
+    <img src="https://img.shields.io/badge/Project%20Page-SCAIL--E2E-green" alt="Project Page">
+  </a>
 </div>
 
 
@@ -44,16 +44,15 @@ To bypass intermediate pose representation, we utilize several off-the-shelf mod
 ## 🚀 Getting Started
 ### Checkpoints Download
 
-| ckpts       | Download Link                                                                                                                                           |    Notes                      |
-|--------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------|
-| SCAIL-2 | Coming Soon     | Trained with mixed resolutions and fps. <br> End-to-end driven supports both 512p and 704p. <br> Pose-driven performs better under 704p.  <br> H and W should be both divisible by 32<br> (e.g. 704*1280) if using other resolutions. |
+| ckpts       | Download Link                                                                                                                |    Notes                      |
+|--------------|------------------------------------------------------------------------------------------------------------------------------|-------------------------------|
+| SCAIL-2 | [🤗 Hugging Face](https://huggingface.co/zai-org/SCAIL-2) <br> [🤖 ModelScope](https://modelscope.cn/models/ZhipuAI/SCAIL-2) | Trained with mixed resolutions and fps. <br> End-to-end driven supports both 512p and 704p. <br> Pose-driven performs better under 704p.  <br> H and W should be both divisible by 32<br> (e.g. 704*1280) if using other resolutions. |
 
 Use the following commands to download the model weights
 (We have integrated both Wan VAE and T5 modules into this checkpoint for convenience).
 
 ```bash
-# Download the repository (skip automatic LFS file downloads)
-...
+hf download zai-org/SCAIL-2
 ```
 The files should be organized like:
 ```
