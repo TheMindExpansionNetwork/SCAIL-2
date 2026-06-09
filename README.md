@@ -4,9 +4,9 @@ This branch holds the original **SAT-based** implementation of SCAIL-2 used to p
 
 ## Checkpoints
 
-| ckpts   | Download Link | Notes                                                                                                                                                                                                            |
-|---------|---------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| SCAIL-2 | Coming Soon   | Trained with mixed resolutions and fps. End-to-end driven supports both 512p and 704p. Pose-driven performs better under 704p. H and W should both be divisible by 32 (e.g. 704×1280) for other resolutions. |
+| ckpts       | Download Link                                                                                                                |    Notes                      |
+|--------------|------------------------------------------------------------------------------------------------------------------------------|-------------------------------|
+| SCAIL-2 | [🤗 Hugging Face](https://huggingface.co/zai-org/SCAIL-2) <br> [🤖 ModelScope](https://modelscope.cn/models/ZhipuAI/SCAIL-2) | Trained with mixed resolutions and fps. <br> End-to-end driven supports both 512p and 704p. <br> Pose-driven performs better under 704p.  <br> H and W should be both divisible by 32<br> (e.g. 704*1280) if using other resolutions. |
 
 The checkpoint integrates Wan VAE and T5; arrange the downloaded files as:
 
