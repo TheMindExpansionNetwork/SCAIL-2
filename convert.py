@@ -192,8 +192,8 @@ def main(args):
 import argparse
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scail-dir", default="SCAIL-Preview/")
-    parser.add_argument("--sat-model-path", default="model/1/mp_rank_00_model_states.pt")
-    parser.add_argument("--save-path", default="Wan2.1-14B-SCAIL.safetensors")
+    parser.add_argument("--scail-dir", default="SCAIL-2/")
+    parser.add_argument("--sat-model-path", default="model/1/fsdp2_rank_0000_checkpoint.pt")
+    parser.add_argument("--save-path", default="SCAIL-2.safetensors")
     args = parser.parse_args()
     main(args)

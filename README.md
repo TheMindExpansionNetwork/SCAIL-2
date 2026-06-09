@@ -67,6 +67,10 @@ SCAIL-2/
     ├── ...
 ```
 
+The model weights are intended for `sat`  branch, for usage in `wan` branch, convert to `safetensors` format: 
+```bash
+python convert.py --scail-dir /path/to/SCAIL-2 --save-path /path/to/SCAIL-2.safetensors
+```
 
 ### Environment Setup
 Please make sure your Python version is between 3.10 and 3.12, inclusive of both 3.10 and 3.12.
