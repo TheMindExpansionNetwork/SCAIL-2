@@ -1,0 +1,13 @@
+Dystopian sonic forager / neon signal explorer unique prompt (generated via DeepSeek enhancer with the instruction below):
+
+the lone dystopian sonic forager with glowing blue cyber implants, tattered high-tech tactical coat and hood walks with determination through a rainy neon-lit abandoned cyberpunk megacity at night, heavy rain, atmospheric fog and reflections on wet streets, cinematic dramatic lighting, high detail textures on clothing and implants, mysterious cool sci-fi vibe, rain droplets and neon signs reflecting, high quality animation, detailed environment
+
+Instruction used for DeepSeek:
+"turn the walking footage into a cool unique dystopian sonic forager character in rainy neon cyberpunk megacity at night with glowing blue implants and tattered high-tech coat, atmospheric rain reflections, cinematic"
+
+Use this (or the live DeepSeek output) as --prompt together with:
+- Your cool ref character image (the forager) + mask
+- The preprocessed pose/mask from the Pexels walking footage (https://www.pexels.com/video/video-of-people-walking-855564/)
+- Light/fast distilled settings in Modal (already default in the app)
+
+This is the "really cool unique" test to see if the full pipeline (fork + Modal pre-cache snapshot + DeepSeek prompt + fast inference) works.
